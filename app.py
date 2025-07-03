@@ -5,20 +5,16 @@ import numpy as np
 import cv2
 import tensorflow as tf
 import json
-import io
-from PIL import Image
 import mediapipe as mp
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# Load model & labels
-model1 = tf.keras.models.load_model("model/sgd.keras")
-model2 = tf.keras.models.load_model("model/sgd2.keras")
-model3 = tf.keras.models.load_model("model/sgd3.keras")
-IMG_SIZE = model1.input_shape[1]
+# Load single model
+model = tf.keras.models.load_model("model/mobilenetv32.keras")
+IMG_SIZE = model.input_shape[1]
 
-IMG_SIZE = model1.input_shape[1]
+# Load label map
 with open("label_map.json", "r") as f:
     label_map = json.load(f)
 label_list = [label_map[str(i)] for i in range(len(label_map))]
@@ -27,31 +23,19 @@ label_list = [label_map[str(i)] for i in range(len(label_map))]
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(static_image_mode=True, max_num_hands=1, min_detection_confidence=0.5)
 
-from collections import Counter
-
-def predict_with_voting(image):
+# Prediction function
+def predict(image):
     resized = cv2.resize(image, (IMG_SIZE, IMG_SIZE))
     input_array = tf.keras.applications.mobilenet_v3.preprocess_input(resized.astype(np.float32))
     input_array = np.expand_dims(input_array, axis=0)
+    preds = model.predict(input_array, verbose=0)
+    label = label_list[np.argmax(preds)]
+    confidence = float(np.max(preds)) * 100
+    return label, confidence
 
-    preds1 = model1.predict(input_array, verbose=0)
-    preds2 = model2.predict(input_array, verbose=0)
-    preds3 = model3.predict(input_array, verbose=0)
-
-    label1 = label_list[np.argmax(preds1)]
-    label2 = label_list[np.argmax(preds2)]
-    label3 = label_list[np.argmax(preds3)]
-
-    vote_result = Counter([label1, label2, label3]).most_common(1)[0]
-    final_label = vote_result[0]
-    vote_count = vote_result[1]
-    confidence = (vote_count / 3) * 100
-
-    return final_label, confidence
-
+# Preprocess and predict function
 
 def preprocess_and_predict(image_bgr):
-    
     img_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     results = hands.process(img_rgb)
 
@@ -73,15 +57,11 @@ def preprocess_and_predict(image_bgr):
         if hand_crop.size == 0:
             return None, None
 
-        resized = cv2.resize(hand_crop, (IMG_SIZE, IMG_SIZE))
-        input_array = tf.keras.applications.mobilenet_v3.preprocess_input(resized.astype(np.float32))
-        input_array = np.expand_dims(input_array, axis=0)
-
-        label, confidence = predict_with_voting(hand_crop)
-        return label, confidence
+        return predict(hand_crop)
 
     return None, None
 
+# Handle frame socket
 @socketio.on("process_frame")
 def handle_frame(base64_data):
     try:
